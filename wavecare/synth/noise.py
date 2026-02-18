@@ -14,7 +14,7 @@ def add_awgn(s_params, snr_db=30.0, rng=None):
     Parameters
     ----------
     s_params : ndarray (complex)
-        S-parameter data, shape [n_freqs, n_angles] or [n_samples, n_freqs, n_angles].
+        S-parameter data, shape (n_measurements, n_freqs) or (n_scans, n_measurements, n_freqs).
     snr_db : float
         Signal-to-noise ratio in dB.
     rng : numpy.random.Generator or None
