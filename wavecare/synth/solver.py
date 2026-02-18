@@ -78,20 +78,83 @@ def prepare_2d_geometry(scene, dx=0.001, pad_cells=40, slice_idx=None):
     }
 
 
+def prepare_3d_geometry(scene, dx=0.001, pad_cells=40):
+    """Prepare full 3D geometry from a scene for gprMax.
+
+    Parameters
+    ----------
+    scene : dict
+        Output from scenes.generate_scene().
+    dx : float
+        Target cell size in meters.
+    pad_cells : int
+        Padding cells for coupling medium on each side.
+
+    Returns
+    -------
+    dict with keys: labels_3d, domain_m, center_m, geo_shape, dx, pad_cells
+    """
+    mtype = scene["mtype"]
+    voxel_mm = scene["voxel_mm"]
+
+    # Resample to target resolution
+    src_mm = voxel_mm
+    tgt_mm = dx * 1000
+    if abs(src_mm - tgt_mm) > 0.01:
+        scale = src_mm / tgt_mm
+        new_nx = int(mtype.shape[0] * scale)
+        new_ny = int(mtype.shape[1] * scale)
+        new_nz = int(mtype.shape[2] * scale)
+        x_idx = (np.arange(new_nx) / scale).astype(int).clip(0, mtype.shape[0]-1)
+        y_idx = (np.arange(new_ny) / scale).astype(int).clip(0, mtype.shape[1]-1)
+        z_idx = (np.arange(new_nz) / scale).astype(int).clip(0, mtype.shape[2]-1)
+        mtype = mtype[np.ix_(x_idx, y_idx, z_idx)]
+
+    nx, ny, nz = mtype.shape
+
+    # Pad for coupling medium
+    padded = np.zeros(
+        (nx + 2*pad_cells, ny + 2*pad_cells, nz + 2*pad_cells), dtype=np.int8)
+    padded[pad_cells:pad_cells+nx,
+           pad_cells:pad_cells+ny,
+           pad_cells:pad_cells+nz] = mtype
+
+    domain_x = padded.shape[0] * dx
+    domain_y = padded.shape[1] * dx
+    domain_z = padded.shape[2] * dx
+    center_x = (pad_cells + nx / 2) * dx
+    center_y = (pad_cells + ny / 2) * dx
+    center_z = (pad_cells + nz / 2) * dx
+
+    return {
+        "labels_3d": padded,
+        "domain_m": (domain_x, domain_y, domain_z),
+        "center_m": (center_x, center_y, center_z),
+        "geo_shape": padded.shape,
+        "dx": dx,
+        "pad_cells": pad_cells,
+    }
+
+
 def write_geometry_files(geo_info, work_dir):
     """Write HDF5 geometry and materials file for gprMax.
+
+    Handles both 2D (labels_2d) and 3D (labels_3d) geometry.
 
     Returns (geo_path, mat_path).
     """
     os.makedirs(work_dir, exist_ok=True)
     dx = geo_info["dx"]
 
-    # HDF5 geometry
+    # HDF5 geometry — detect 2D vs 3D
     geo_path = os.path.join(work_dir, "breast_geo.h5")
-    data_3d = geo_info["labels_2d"].astype(np.int16)[:, :, np.newaxis]
+    if "labels_3d" in geo_info:
+        data = geo_info["labels_3d"].astype(np.int16)
+    else:
+        data = geo_info["labels_2d"].astype(np.int16)[:, :, np.newaxis]
     with h5py.File(geo_path, 'w') as f:
         f.attrs['dx_dy_dz'] = (dx, dx, dx)
-        f.create_dataset('data', data=data_3d, dtype='int16')
+        f.create_dataset('data', data=data, dtype='int16')
 
     # Materials file (Debye 1-pole, 11 tissue types)
     mat_path = os.path.join(work_dir, "breast_mat.txt")
@@ -197,10 +260,83 @@ def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
     return inputs
 
 
-def run_simulation(input_file):
-    """Run a single gprMax simulation."""
+def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=8e-9):
+    """Generate gprMax .in files for all Tx-Rx pairs in 3D.
+
+    Antennas are placed in a ring at z = breast center.
+
+    Parameters
+    ----------
+    geo_info : dict
+        From prepare_3d_geometry().
+    array_geo : ArrayGeometry
+    work_dir : str
+    time_window : float
+
+    Returns
+    -------
+    list of (input_path, tx_idx, rx_idx)
+    """
+    dx = geo_info["dx"]
+    domain_x, domain_y, domain_z = geo_info["domain_m"]
+    offset = geo_info["pad_cells"] * dx
+    cx, cy, cz = geo_info["center_m"]
+
+    positions = array_geo.antenna_positions()  # (n, 2) — x, y
+    positions[:, 0] += cx
+    positions[:, 1] += cy
+    ant_z = round(cz / dx) * dx  # snap to grid
+
+    pairs = array_geo.tx_rx_pairs()
+    inputs = []
+
+    for pair_idx, (tx_idx, rx_idx) in enumerate(pairs):
+        tx_x = round(positions[tx_idx, 0] / dx) * dx
+        tx_y = round(positions[tx_idx, 1] / dx) * dx
+        rx_x = round(positions[rx_idx, 0] / dx) * dx
+        rx_y = round(positions[rx_idx, 1] / dx) * dx
+
+        lines = [
+            f"#title: 3D scan pair {pair_idx} (tx={tx_idx} rx={rx_idx})",
+            f"#domain: {domain_x:.6f} {domain_y:.6f} {domain_z:.6f}",
+            f"#dx_dy_dz: {dx:.6f} {dx:.6f} {dx:.6f}",
+            f"#time_window: {time_window:.2e}",
+            "",
+            "#material: 10.0 0.01 1 0 bg_coupling",
+            f"#box: 0 0 0 {domain_x:.6f} {domain_y:.6f} {domain_z:.6f} bg_coupling",
+            "",
+            f"#geometry_objects_read: {offset:.6f} {offset:.6f} {offset:.6f} "
+            "breast_geo.h5 breast_mat.txt",
+            "",
+            "#waveform: ricker 1 4.5e9 uwb_pulse",
+            f"#hertzian_dipole: z {tx_x:.6f} {tx_y:.6f} {ant_z:.6f} uwb_pulse",
+            "",
+            f"#rx: {rx_x:.6f} {rx_y:.6f} {ant_z:.6f}",
+        ]
+
+        path = os.path.join(work_dir, f"pair_{pair_idx:04d}.in")
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+
+        inputs.append((path, tx_idx, rx_idx))
+
+    return inputs
+
+
+def run_simulation(input_file, gpu=None):
+    """Run a single gprMax simulation.
+
+    Parameters
+    ----------
+    input_file : str
+    gpu : list of int or None
+        GPU device IDs (e.g. [0]). None = CPU.
+    """
     from gprMax.gprMax import api
-    api(input_file)
+    if gpu is not None:
+        api(input_file, gpu=gpu)
+    else:
+        api(input_file)
 
 
 def run_scan(inputs, verbose=True, max_failures=None):
