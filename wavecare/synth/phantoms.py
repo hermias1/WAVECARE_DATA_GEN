@@ -9,6 +9,7 @@ Both provide 3D voxel grids with tissue labels and dielectric assignments.
 
 import os
 import struct
+import warnings
 import numpy as np
 
 try:
@@ -136,7 +137,15 @@ def _load_mtype_data(phantom_dir, expected_size):
     if os.path.exists(zip_path):
         with zipfile.ZipFile(zip_path, 'r') as zf:
             names = zf.namelist()
-            data_name = names[0]  # typically mtype.txt
+            # Prefer mtype.txt explicitly; fall back to first .txt file
+            txt_names = [n for n in names if n.lower().endswith('.txt')]
+            mtype_names = [n for n in txt_names if 'mtype' in n.lower()]
+            if mtype_names:
+                data_name = mtype_names[0]
+            elif txt_names:
+                data_name = txt_names[0]
+            else:
+                data_name = names[0]
             raw_bytes = zf.read(data_name)
 
             if data_name.endswith('.txt'):
@@ -162,13 +171,29 @@ def _load_mtype_data(phantom_dir, expected_size):
 
 
 def _float_to_int_labels(raw_3d):
-    """Convert UWCEM float tissue labels to integer labels 0-9."""
-    mtype = np.zeros_like(raw_3d, dtype=np.int8)
+    """Convert UWCEM float tissue labels to integer labels 0-9.
+
+    Raises a warning if any voxels don't match known tissue float values.
+    """
+    mtype = np.full_like(raw_3d, fill_value=-1, dtype=np.int8)
 
     for float_val, int_val in _UWCEM_FLOAT_TO_INT.items():
         # Use approximate comparison for floats
         mask = np.abs(raw_3d - float_val) < 0.05
         mtype[mask] = int_val
+
+    # Check for unmapped voxels
+    unmapped = mtype == -1
+    n_unmapped = np.sum(unmapped)
+    if n_unmapped > 0:
+        unknown_vals = np.unique(raw_3d[unmapped])
+        warnings.warn(
+            f"{n_unmapped} voxels ({100*n_unmapped/raw_3d.size:.2f}%) have "
+            f"unknown tissue labels: {unknown_vals.tolist()}. "
+            f"Mapping to 0 (background).",
+            stacklevel=2,
+        )
+        mtype[unmapped] = 0
 
     return mtype
 

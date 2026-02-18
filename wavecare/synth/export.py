@@ -20,8 +20,9 @@ def td_to_fd(td_signals, dt, n_freqs=1001, ini_freq=1e9, fin_freq=8e9):
 
     Parameters
     ----------
-    td_signals : ndarray, shape (n_time_steps, n_angles) or (n_time_steps,)
+    td_signals : ndarray, shape (n_measurements, n_timesteps) or (n_timesteps,)
         Time-domain voltage/field signals from gprMax.
+        Convention: rows = measurements, columns = time samples.
     dt : float
         Time step in seconds.
     n_freqs : int
@@ -33,34 +34,37 @@ def td_to_fd(td_signals, dt, n_freqs=1001, ini_freq=1e9, fin_freq=8e9):
 
     Returns
     -------
-    fd_data : ndarray (complex), shape (n_freqs, n_angles) or (n_freqs,)
+    fd_data : ndarray (complex), shape (n_measurements, n_freqs) or (n_freqs,)
         Frequency-domain S-parameters at the target frequencies.
     freqs : ndarray
         Frequency vector in Hz.
     """
-    n_steps = td_signals.shape[0]
     freqs_target = np.linspace(ini_freq, fin_freq, n_freqs)
 
-    # FFT of the time-domain signal
-    fd_full = np.fft.fft(td_signals, axis=0)
-    freq_full = np.fft.fftfreq(n_steps, d=dt)
-
-    # Only keep positive frequencies
-    pos_mask = freq_full >= 0
-    freq_pos = freq_full[pos_mask]
-    fd_pos = fd_full[pos_mask] if td_signals.ndim == 1 else fd_full[pos_mask, :]
-
-    # Interpolate to target frequency grid
     if td_signals.ndim == 1:
+        n_steps = td_signals.shape[0]
+        fd_full = np.fft.fft(td_signals)
+        freq_full = np.fft.fftfreq(n_steps, d=dt)
+        pos_mask = freq_full >= 0
+        freq_pos = freq_full[pos_mask]
+        fd_pos = fd_full[pos_mask]
         fd_data = np.interp(freqs_target, freq_pos, np.real(fd_pos)) + \
                   1j * np.interp(freqs_target, freq_pos, np.imag(fd_pos))
     else:
-        n_angles = td_signals.shape[1]
-        fd_data = np.zeros((n_freqs, n_angles), dtype=complex)
-        for i in range(n_angles):
-            fd_data[:, i] = (
-                np.interp(freqs_target, freq_pos, np.real(fd_pos[:, i]))
-                + 1j * np.interp(freqs_target, freq_pos, np.imag(fd_pos[:, i]))
+        # shape (n_measurements, n_timesteps) — FFT along axis=1 (time)
+        n_steps = td_signals.shape[1]
+        fd_full = np.fft.fft(td_signals, axis=1)
+        freq_full = np.fft.fftfreq(n_steps, d=dt)
+        pos_mask = freq_full >= 0
+        freq_pos = freq_full[pos_mask]
+        fd_pos = fd_full[:, pos_mask]
+
+        n_meas = td_signals.shape[0]
+        fd_data = np.zeros((n_meas, n_freqs), dtype=complex)
+        for i in range(n_meas):
+            fd_data[i] = (
+                np.interp(freqs_target, freq_pos, np.real(fd_pos[i]))
+                + 1j * np.interp(freqs_target, freq_pos, np.imag(fd_pos[i]))
             )
 
     return fd_data, freqs_target
@@ -71,8 +75,8 @@ def calibrate(fd_data, fd_reference):
 
     Parameters
     ----------
-    fd_data : ndarray (complex), shape (n_freqs, n_angles)
-    fd_reference : ndarray (complex), shape (n_freqs, n_angles)
+    fd_data : ndarray (complex), shape (n_measurements, n_freqs)
+    fd_reference : ndarray (complex), shape (n_measurements, n_freqs)
 
     Returns
     -------
@@ -86,7 +90,7 @@ def package_scan(fd_s11, metadata, fd_s21=None):
 
     Parameters
     ----------
-    fd_s11 : ndarray (complex), shape (1001, 72)
+    fd_s11 : ndarray (complex), shape (n_measurements, n_freqs)
     metadata : dict
     fd_s21 : ndarray (complex) or None
 
@@ -107,7 +111,7 @@ def save_dataset(scans, output_dir, dataset_name="synth"):
     """Save a list of scans as UMBMID-compatible pickle files.
 
     Creates:
-    - fd_data_s11_{dataset_name}.pickle : shape (n_scans, n_freqs, n_angles)
+    - fd_data_s11_{dataset_name}.pickle : shape (n_scans, n_measurements, n_freqs)
     - md_list_s11_{dataset_name}.pickle : list of metadata dicts
 
     Uses pickle for UMBMID format compatibility (upstream standard).
@@ -122,10 +126,10 @@ def save_dataset(scans, output_dir, dataset_name="synth"):
     os.makedirs(output_dir, exist_ok=True)
 
     n_scans = len(scans)
-    n_freqs = scans[0]["fd_s11"].shape[0]
-    n_angles = scans[0]["fd_s11"].shape[1]
+    n_meas = scans[0]["fd_s11"].shape[0]
+    n_freqs = scans[0]["fd_s11"].shape[1]
 
-    fd_data = np.zeros((n_scans, n_freqs, n_angles), dtype=complex)
+    fd_data = np.zeros((n_scans, n_meas, n_freqs), dtype=complex)
     md_list = []
 
     for i, scan in enumerate(scans):

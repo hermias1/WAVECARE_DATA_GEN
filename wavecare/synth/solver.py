@@ -203,28 +203,45 @@ def run_simulation(input_file):
     api(input_file)
 
 
-def run_scan(inputs, verbose=True):
+def run_scan(inputs, verbose=True, max_failures=None):
     """Run all simulations sequentially.
 
     Parameters
     ----------
     inputs : list of (path, tx_idx, rx_idx)
     verbose : bool
+    max_failures : int or None
+        Maximum allowed failures before aborting. None = 10% of total.
 
     Returns
     -------
     float : total time in seconds
+
+    Raises
+    ------
+    RuntimeError
+        If too many simulations fail.
     """
     n = len(inputs)
+    if max_failures is None:
+        max_failures = max(1, n // 10)
+
     t0 = time.time()
+    n_failures = 0
 
     for i, (infile, tx, rx) in enumerate(inputs):
         ts = time.time()
         try:
             run_simulation(infile)
         except Exception as e:
+            n_failures += 1
             if verbose:
                 print(f"  FAILED pair {i} (tx={tx}, rx={rx}): {e}")
+            if n_failures > max_failures:
+                raise RuntimeError(
+                    f"Aborting: {n_failures}/{i+1} simulations failed "
+                    f"(threshold: {max_failures})"
+                ) from e
             continue
 
         if verbose:
@@ -236,6 +253,9 @@ def run_scan(inputs, verbose=True):
                 total = time.time() - t0
                 eta = total / (i + 1) * (n - i - 1) / 60
                 print(f"  [{i+1}/{n}] {elapsed:.1f}s/sim, ETA: {eta:.1f} min")
+
+    if verbose and n_failures > 0:
+        print(f"  Warning: {n_failures}/{n} simulations failed")
 
     return time.time() - t0
 
@@ -272,6 +292,14 @@ def collect_results(work_dir, inputs, target_freqs_hz=None):
     valid = [e for e in all_ez if e is not None]
     if not valid:
         raise RuntimeError("No valid simulation outputs found")
+
+    n_missing = len(all_ez) - len(valid)
+    if n_missing > 0:
+        import warnings
+        warnings.warn(
+            f"{n_missing}/{len(all_ez)} simulation outputs missing. "
+            f"Corresponding rows will be zero-filled."
+        )
 
     max_len = max(len(e) for e in valid)
     n_pairs = len(inputs)

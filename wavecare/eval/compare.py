@@ -18,7 +18,7 @@ def signal_statistics(data):
     dict with peak, rms, dynamic_range, snr_estimate
     """
     peak = np.max(np.abs(data), axis=1)
-    rms = np.sqrt(np.mean(data**2, axis=1))
+    rms = np.sqrt(np.mean(np.abs(data)**2, axis=1))
 
     return {
         "peak_mean": float(np.mean(peak)),
@@ -74,8 +74,8 @@ def angular_variation_similarity(data_synth, data_real):
     -------
     dict with angular correlation
     """
-    energy_synth = np.sum(data_synth**2, axis=1)
-    energy_real = np.sum(data_real**2, axis=1)
+    energy_synth = np.sum(np.abs(data_synth)**2, axis=1)
+    energy_real = np.sum(np.abs(data_real)**2, axis=1)
 
     # Normalize
     energy_synth = energy_synth / energy_synth.max()
