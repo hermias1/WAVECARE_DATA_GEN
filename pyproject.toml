@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "wavecare-datagen"
+version = "0.1.0"
+description = "Synthetic microwave imaging data generation for breast tumor detection"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Ulysse Trin"},
+    {name = "Philip Tchatchoua"},
+]
+
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "h5py>=3.0",
+    "matplotlib>=3.5",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+phantoms = ["SimpleITK"]  # for Pelicano MHA format
+
+[tool.setuptools.packages.find]
+include = ["wavecare*"]

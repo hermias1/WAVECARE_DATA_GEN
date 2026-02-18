@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data (large files - download separately)
+data/uwcem/
+data/umbmid/
+data/pelicano/
+
+# Simulation outputs
+output/
+*.out
+*.vti
+*.vtp
+*.h5
+
+# gprMax build artifacts
+gprMax/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env
+.env
+venv/
+.venv/
