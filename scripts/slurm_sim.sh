@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:30:00
+#SBATCH --time=01:00:00
 #SBATCH --job-name=wavecare_sim
 #
 # Single gprMax 3D simulation on GPU.
@@ -32,12 +32,11 @@ echo "  Input:     ${INPUT_FILE}"
 echo "  Task ID:   ${SLURM_ARRAY_TASK_ID}"
 echo "  Start:     $(date)"
 
-# Load modules (adapt to your cluster)
-# module load cuda/11.8
-# module load python/3.10
+# Activate conda environment
+eval "$(conda shell.bash hook)"
+conda activate wavecare
 
-# Activate venv if needed
-# source /path/to/venv/bin/activate
+START_SEC=$(date +%s)
 
 cd "${WORK_DIR}"
 
@@ -46,6 +45,10 @@ from gprMax.gprMax import api
 api('${INPUT_FILE}', gpu=[0])
 "
 
+END_SEC=$(date +%s)
+RUNTIME=$((END_SEC - START_SEC))
+
 echo "  End:       $(date)"
+echo "  Runtime:   ${RUNTIME} seconds"
 echo "  Output:    ${WORK_DIR}/pair_${PAIR_ID}.out"
 echo "=== Done ==="

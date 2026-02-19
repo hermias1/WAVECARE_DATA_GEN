@@ -78,7 +78,7 @@ def prepare_2d_geometry(scene, dx=0.001, pad_cells=40, slice_idx=None):
     }
 
 
-def prepare_3d_geometry(scene, dx=0.001, pad_cells=40):
+def prepare_3d_geometry(scene, dx=0.001, pad_cells=50):
     """Prepare full 3D geometry from a scene for gprMax.
 
     Parameters
@@ -136,10 +136,20 @@ def prepare_3d_geometry(scene, dx=0.001, pad_cells=40):
     }
 
 
-def write_geometry_files(geo_info, work_dir):
+def write_geometry_files(geo_info, work_dir, perturbation=0.0, rng=None):
     """Write HDF5 geometry and materials file for gprMax.
 
     Handles both 2D (labels_2d) and 3D (labels_3d) geometry.
+
+    Parameters
+    ----------
+    geo_info : dict
+    work_dir : str
+    perturbation : float
+        If > 0, jitter Debye parameters by this fraction (e.g. 0.05 = 5%).
+        Useful for generating distinct reference scans for negative samples.
+    rng : numpy.random.Generator or None
+        Required if perturbation > 0.
 
     Returns (geo_path, mat_path).
     """
@@ -156,38 +166,39 @@ def write_geometry_files(geo_info, work_dir):
         f.attrs['dx_dy_dz'] = (dx, dx, dx)
         f.create_dataset('data', data=data, dtype='int16')
 
-    # Materials file (Debye 1-pole, 11 tissue types)
-    mat_path = os.path.join(work_dir, "breast_mat.txt")
-    mat_lines = [
-        # idx 0: coupling medium
-        "#material: 10.0 0.01 1 0 coupling_medium",
-        # idx 1: skin
-        "#material: 4.0 0.0002 1 0 skin",
-        "#add_dispersion_debye: 1 32.0 7.234e-12 skin",
-        # idx 2: muscle
-        "#material: 4.0 0.20 1 0 muscle",
-        "#add_dispersion_debye: 1 50.0 7.234e-12 muscle",
-        # idx 3-5: fat (low/med/high water)
-        "#material: 2.55 0.020 1 0 fat_1",
-        "#add_dispersion_debye: 1 1.20 13.0e-12 fat_1",
-        "#material: 2.55 0.036 1 0 fat_2",
-        "#add_dispersion_debye: 1 1.71 13.0e-12 fat_2",
-        "#material: 3.0 0.083 1 0 fat_3",
-        "#add_dispersion_debye: 1 3.65 13.0e-12 fat_3",
-        # idx 6: transitional
-        "#material: 5.5 0.304 1 0 transitional",
-        "#add_dispersion_debye: 1 16.55 13.0e-12 transitional",
-        # idx 7-9: fibroglandular
-        "#material: 9.9 0.462 1 0 fibro_1",
-        "#add_dispersion_debye: 1 26.60 13.0e-12 fibro_1",
-        "#material: 13.81 0.738 1 0 fibro_2",
-        "#add_dispersion_debye: 1 35.55 13.0e-12 fibro_2",
-        "#material: 6.15 0.809 1 0 fibro_3",
-        "#add_dispersion_debye: 1 48.26 13.0e-12 fibro_3",
-        # idx 10: tumor
-        "#material: 14.0 0.90 1 0 tumor",
-        "#add_dispersion_debye: 1 42.0 13.0e-12 tumor",
+    # Base Debye parameters: (eps_inf, sigma, delta_eps, tau, name)
+    _TISSUES = [
+        (10.0,  0.01,   None,     None,      "coupling_medium"),
+        (4.0,   0.0002, 32.0,     7.234e-12, "skin"),
+        (4.0,   0.20,   50.0,     7.234e-12, "muscle"),
+        (2.55,  0.020,  1.20,     13.0e-12,  "fat_1"),
+        (2.55,  0.036,  1.71,     13.0e-12,  "fat_2"),
+        (3.0,   0.083,  3.65,     13.0e-12,  "fat_3"),
+        (5.5,   0.304,  16.55,    13.0e-12,  "transitional"),
+        (9.9,   0.462,  26.60,    13.0e-12,  "fibro_1"),
+        (13.81, 0.738,  35.55,    13.0e-12,  "fibro_2"),
+        (6.15,  0.809,  48.26,    13.0e-12,  "fibro_3"),
+        (14.0,  0.90,   42.0,     13.0e-12,  "tumor"),
     ]
+
+    def _jitter(val, rng, pct):
+        """Apply Gaussian jitter: val * (1 + N(0, pct))."""
+        return val * (1 + rng.normal(0, pct))
+
+    mat_lines = []
+    for eps_inf, sigma, delta_eps, tau, name in _TISSUES:
+        if perturbation > 0 and rng is not None:
+            eps_inf = _jitter(eps_inf, rng, perturbation)
+            sigma = abs(_jitter(sigma, rng, perturbation))
+            if delta_eps is not None:
+                delta_eps = _jitter(delta_eps, rng, perturbation)
+
+        mat_lines.append(f"#material: {eps_inf:.4f} {sigma:.6f} 1 0 {name}")
+        if delta_eps is not None:
+            mat_lines.append(
+                f"#add_dispersion_debye: 1 {delta_eps:.4f} {tau:.3e} {name}")
+
+    mat_path = os.path.join(work_dir, "breast_mat.txt")
     with open(mat_path, 'w') as f:
         f.write('\n'.join(mat_lines) + '\n')
 
@@ -260,7 +271,7 @@ def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
     return inputs
 
 
-def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=8e-9):
+def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=12e-9):
     """Generate gprMax .in files for all Tx-Rx pairs in 3D.
 
     Antennas are placed in a ring at z = breast center.
