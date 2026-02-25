@@ -80,12 +80,15 @@ def cmd_prepare(args):
     """Load phantom, generate scenes, write geometry + .in files."""
     data_dir = args.data_dir or os.path.join(_PROJECT_ROOT, "data", "uwcem")
     array_geo = _get_preset(args.preset)
+    if args.radius_cm is not None:
+        array_geo.radius_m = args.radius_cm / 100.0
     mode = getattr(args, 'mode', 'positive')
 
     print("Loading phantom...")
     phantom = load_uwcem_phantom(os.path.join(data_dir, args.phantom))
     print(f"  Shape: {phantom['shape']}, voxel: {phantom['voxel_mm']} mm")
     print(f"  Mode: {mode}")
+    print(f"  Radius: {array_geo.radius_m*100:.2f} cm")
 
     rng = np.random.default_rng(args.seed)
 
@@ -119,7 +122,12 @@ def _prepare_positive(args, phantom, array_geo, rng):
     print("Preparing 3D geometry (tumor)...")
     tumor_geo = prepare_3d_geometry(tumor_scene, dx=args.dx, pad_cells=args.pad)
     write_geometry_files(tumor_geo, tumor_work)
-    tumor_inputs = generate_gprmax_inputs_3d(tumor_geo, array_geo, tumor_work)
+    tumor_inputs = generate_gprmax_inputs_3d(
+        tumor_geo,
+        array_geo,
+        tumor_work,
+        min_clearance_m=args.min_clearance_mm / 1000.0,
+    )
     print(f"  Domain: {tumor_geo['geo_shape']} = "
           f"{np.prod(tumor_geo['geo_shape'])/1e6:.1f}M cells")
     print(f"  {len(tumor_inputs)} .in files written")
@@ -134,7 +142,12 @@ def _prepare_positive(args, phantom, array_geo, rng):
     print("Preparing 3D geometry (reference)...")
     ref_geo = prepare_3d_geometry(ref_scene, dx=args.dx, pad_cells=args.pad)
     write_geometry_files(ref_geo, ref_work)
-    ref_inputs = generate_gprmax_inputs_3d(ref_geo, array_geo, ref_work)
+    ref_inputs = generate_gprmax_inputs_3d(
+        ref_geo,
+        array_geo,
+        ref_work,
+        min_clearance_m=args.min_clearance_mm / 1000.0,
+    )
     print(f"  {len(ref_inputs)} .in files written")
 
     # Metadata
@@ -146,6 +159,8 @@ def _prepare_positive(args, phantom, array_geo, rng):
         "tumor_mm": args.tumor_mm if has_tumor else 0,
         "seed": args.seed,
         "dx": args.dx,
+        "ant_radius_cm": array_geo.radius_m * 100.0,
+        "min_clearance_mm": args.min_clearance_mm,
         "pad_cells": args.pad,
         "n_pairs_tumor": len(tumor_inputs),
         "n_pairs_ref": len(ref_inputs),
@@ -181,7 +196,12 @@ def _prepare_negative(args, phantom, array_geo, rng):
     mat_rng_a = np.random.default_rng(args.seed + 2_000_000)
     write_geometry_files(geo_a, ref_a_work,
                          perturbation=perturbation, rng=mat_rng_a)
-    inputs_a = generate_gprmax_inputs_3d(geo_a, array_geo, ref_a_work)
+    inputs_a = generate_gprmax_inputs_3d(
+        geo_a,
+        array_geo,
+        ref_a_work,
+        min_clearance_m=args.min_clearance_mm / 1000.0,
+    )
     print(f"  Domain: {geo_a['geo_shape']} = "
           f"{np.prod(geo_a['geo_shape'])/1e6:.1f}M cells")
     print(f"  {len(inputs_a)} .in files written")
@@ -198,7 +218,12 @@ def _prepare_negative(args, phantom, array_geo, rng):
     mat_rng_b = np.random.default_rng(args.seed + 3_000_000)
     write_geometry_files(geo_b, ref_b_work,
                          perturbation=perturbation, rng=mat_rng_b)
-    inputs_b = generate_gprmax_inputs_3d(geo_b, array_geo, ref_b_work)
+    inputs_b = generate_gprmax_inputs_3d(
+        geo_b,
+        array_geo,
+        ref_b_work,
+        min_clearance_m=args.min_clearance_mm / 1000.0,
+    )
     print(f"  {len(inputs_b)} .in files written")
 
     # Metadata
@@ -210,6 +235,8 @@ def _prepare_negative(args, phantom, array_geo, rng):
         "tumor_mm": 0,
         "seed": args.seed,
         "dx": args.dx,
+        "ant_radius_cm": array_geo.radius_m * 100.0,
+        "min_clearance_mm": args.min_clearance_mm,
         "pad_cells": args.pad,
         "perturbation": perturbation,
         "n_pairs_ref_a": len(inputs_a),
@@ -471,6 +498,10 @@ def _add_common_prepare_args(p):
                    help="Cell size in meters (default: 1mm)")
     p.add_argument("--pad", type=int, default=50,
                    help="Padding cells (default: 50 = 5cm)")
+    p.add_argument("--radius-cm", type=float, default=None,
+                   help="Override antenna ring radius (cm)")
+    p.add_argument("--min-clearance-mm", type=float, default=0.0,
+                   help="Required antenna-to-tissue clearance (mm)")
     p.add_argument("--perturbation", type=float, default=_DEFAULT_PERTURBATION,
                    help="Material perturbation for negative scans (default: 0.05)")
     p.add_argument("--work-dir", required=True)

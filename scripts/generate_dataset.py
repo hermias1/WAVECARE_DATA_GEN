@@ -49,7 +49,7 @@ def _get_preset(name):
 
 
 def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
-                    seed, dx, work_dir):
+                    seed, dx, work_dir, min_clearance_m=0.0):
     """Run one FDTD scan (tumor or reference). Returns results dict."""
     rng = np.random.default_rng(seed)
     scene = generate_scene(phantom, has_tumor=has_tumor, rng=rng,
@@ -57,7 +57,12 @@ def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
 
     geo_info = prepare_2d_geometry(scene, dx=dx)
     write_geometry_files(geo_info, work_dir)
-    inputs = generate_gprmax_inputs(geo_info, array_geo, work_dir)
+    inputs = generate_gprmax_inputs(
+        geo_info,
+        array_geo,
+        work_dir,
+        min_clearance_m=min_clearance_m,
+    )
 
     run_scan(inputs)
     results = collect_results(work_dir, inputs,
@@ -67,7 +72,8 @@ def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
 
 
 def generate_one(phantom, array_geo, tumor_mm, seed, dx,
-                 output_dir, snr_db=30.0, scan_id=0, phant_id="SYN"):
+                 output_dir, snr_db=30.0, scan_id=0, phant_id="SYN",
+                 min_clearance_m=0.0):
     """Generate one calibrated, noisy scan.
 
     Returns dict with all data and metadata.
@@ -84,7 +90,7 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
     tumor_results, tumor_scene, geo_info = run_single_scan(
         phantom, array_geo, has_tumor=True,
         tumor_params=tumor_params, seed=seed, dx=dx,
-        work_dir=tumor_work,
+        work_dir=tumor_work, min_clearance_m=min_clearance_m,
     )
     print(f"  [tumor] Done in {(time.time()-t0)/60:.1f} min")
 
@@ -100,7 +106,7 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
     ref_results, _, _ = run_single_scan(
         phantom, array_geo, has_tumor=False,
         tumor_params=None, seed=ref_seed, dx=dx,
-        work_dir=ref_work,
+        work_dir=ref_work, min_clearance_m=min_clearance_m,
     )
     print(f"  [ref]   Done in {(time.time()-t0)/60:.1f} min")
 
@@ -122,6 +128,8 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
                                  phant_id=phant_id)
     metadata["seed"] = seed
     metadata["dx"] = dx
+    metadata["ant_radius_cm"] = array_geo.radius_m * 100.0
+    metadata["min_clearance_mm"] = min_clearance_m * 1000.0
     metadata["preset"] = "custom"
     metadata["noise_snr_db"] = noise_params["snr_db"]
     metadata["noise_phase_deg"] = noise_params["phase_std_deg"]
@@ -157,6 +165,10 @@ def main():
                         help="Tumor diameter range in mm (for multi-scan)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dx", type=float, default=0.001)
+    parser.add_argument("--radius-cm", type=float, default=None,
+                        help="Override antenna ring radius (cm)")
+    parser.add_argument("--min-clearance-mm", type=float, default=0.0,
+                        help="Required antenna-to-tissue clearance (mm)")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
@@ -167,6 +179,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     array_geo = _get_preset(args.preset)
+    if args.radius_cm is not None:
+        array_geo.radius_m = args.radius_cm / 100.0
 
     print("=" * 60)
     print("WaveCare Dataset Generation (Phase 1)")
@@ -175,6 +189,7 @@ def main():
           f"{array_geo.mode})")
     print(f"  Scans:   {args.n_scans}")
     print(f"  Cell:    {args.dx*1000:.1f} mm")
+    print(f"  Radius:  {array_geo.radius_m*100:.2f} cm")
     print(f"  Output:  {output_dir}")
     print("=" * 60)
 
@@ -214,6 +229,7 @@ def main():
             output_dir=output_dir,
             scan_id=i,
             phant_id=args.phantom,
+            min_clearance_m=args.min_clearance_mm / 1000.0,
         )
 
         all_fd_cal.append(result["fd_cal"])

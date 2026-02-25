@@ -10,6 +10,7 @@ import numpy as np
 import h5py
 from scipy.fft import fft, fftfreq
 from scipy.interpolate import interp1d
+from scipy.ndimage import distance_transform_edt
 
 
 def prepare_2d_geometry(scene, dx=0.001, pad_cells=40, slice_idx=None):
@@ -205,7 +206,101 @@ def write_geometry_files(geo_info, work_dir, perturbation=0.0, rng=None):
     return geo_path, mat_path
 
 
-def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
+def _check_antenna_positions(
+    geo_info,
+    positions_xy,
+    min_clearance_m=0.0,
+    ant_z_m=None,
+):
+    """Validate that antenna points are in coupling medium with clearance.
+
+    Parameters
+    ----------
+    geo_info : dict
+        Geometry info from prepare_2d_geometry or prepare_3d_geometry.
+    positions_xy : ndarray
+        Antenna (x, y) positions in meters, in domain coordinates.
+    min_clearance_m : float
+        Required minimum distance from each antenna point to tissue.
+    ant_z_m : float or None
+        z-position for 3D placement. Ignored for 2D geometry.
+
+    Raises
+    ------
+    ValueError
+        If any antenna is out of bounds, inside tissue, or too close.
+    """
+    dx = geo_info["dx"]
+    center_x, center_y = geo_info["center_m"][:2]
+    n_ant = positions_xy.shape[0]
+
+    if "labels_3d" in geo_info:
+        labels = geo_info["labels_3d"]
+        if ant_z_m is None:
+            raise ValueError("ant_z_m must be provided for 3D antenna validation")
+        iz = int(round(ant_z_m / dx))
+        if iz < 0 or iz >= labels.shape[2]:
+            raise ValueError(
+                f"Antenna z index out of bounds: {iz} not in [0, {labels.shape[2] - 1}]"
+            )
+        slice_2d = labels[:, :, iz]
+        slice_desc = f"3D z={ant_z_m * 1000:.1f}mm"
+    else:
+        slice_2d = geo_info["labels_2d"]
+        slice_desc = f"2D slice_idx={geo_info.get('slice_idx', 'n/a')}"
+
+    ix = np.rint(positions_xy[:, 0] / dx).astype(int)
+    iy = np.rint(positions_xy[:, 1] / dx).astype(int)
+    in_bounds = (
+        (ix >= 0) & (ix < slice_2d.shape[0]) &
+        (iy >= 0) & (iy < slice_2d.shape[1])
+    )
+
+    n_oob = int(np.sum(~in_bounds))
+    if n_oob > 0:
+        raise ValueError(
+            f"Invalid antenna placement ({slice_desc}): "
+            f"{n_oob}/{n_ant} antennas are outside simulation domain."
+        )
+
+    sampled_labels = slice_2d[ix, iy]
+    in_tissue = sampled_labels > 0
+    n_in_tissue = int(np.sum(in_tissue))
+
+    tissue_mask = slice_2d > 0
+    clearance_map = distance_transform_edt(~tissue_mask) * dx
+    clearances = clearance_map[ix, iy]
+    min_clearance_found = float(np.min(clearances)) if clearances.size else float("inf")
+
+    tissue_ix, tissue_iy = np.where(tissue_mask)
+    if tissue_ix.size > 0:
+        x_m = tissue_ix * dx
+        y_m = tissue_iy * dx
+        radii = np.sqrt((x_m - center_x) ** 2 + (y_m - center_y) ** 2)
+        suggested_radius_m = float(np.max(radii) + min_clearance_m)
+    else:
+        suggested_radius_m = 0.0
+
+    failing = n_in_tissue > 0 or min_clearance_found < min_clearance_m
+    if failing:
+        raise ValueError(
+            "Invalid antenna placement "
+            f"({slice_desc}): {n_in_tissue}/{n_ant} antennas are in tissue, "
+            f"minimum clearance={min_clearance_found * 1000:.2f}mm "
+            f"(required >= {min_clearance_m * 1000:.2f}mm). "
+            f"Suggested ring radius from current center: >= {suggested_radius_m * 100:.2f}cm. "
+            "Increase array_geo.radius_m and/or recenter the geometry."
+        )
+
+
+def generate_gprmax_inputs(
+    geo_info,
+    array_geo,
+    work_dir,
+    time_window=8e-9,
+    validate_placement=True,
+    min_clearance_m=0.0,
+):
     """Generate gprMax .in files for all Tx-Rx pairs.
 
     Parameters
@@ -218,6 +313,10 @@ def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
         Directory for .in files.
     time_window : float
         Simulation time window in seconds.
+    validate_placement : bool
+        If True, fail fast when antennas are out-of-domain / in tissue.
+    min_clearance_m : float
+        Required minimum distance from antennas to tissue (meters).
 
     Returns
     -------
@@ -234,6 +333,12 @@ def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
     # Shift positions to domain coordinates
     positions[:, 0] += cx
     positions[:, 1] += cy
+    if validate_placement:
+        _check_antenna_positions(
+            geo_info,
+            positions,
+            min_clearance_m=min_clearance_m,
+        )
 
     pairs = array_geo.tx_rx_pairs()
     inputs = []
@@ -271,7 +376,14 @@ def generate_gprmax_inputs(geo_info, array_geo, work_dir, time_window=8e-9):
     return inputs
 
 
-def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=12e-9):
+def generate_gprmax_inputs_3d(
+    geo_info,
+    array_geo,
+    work_dir,
+    time_window=12e-9,
+    validate_placement=True,
+    min_clearance_m=0.0,
+):
     """Generate gprMax .in files for all Tx-Rx pairs in 3D.
 
     Antennas are placed in a ring at z = breast center.
@@ -283,6 +395,10 @@ def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=12e-9):
     array_geo : ArrayGeometry
     work_dir : str
     time_window : float
+    validate_placement : bool
+        If True, fail fast when antennas are out-of-domain / in tissue.
+    min_clearance_m : float
+        Required minimum distance from antennas to tissue (meters).
 
     Returns
     -------
@@ -297,6 +413,13 @@ def generate_gprmax_inputs_3d(geo_info, array_geo, work_dir, time_window=12e-9):
     positions[:, 0] += cx
     positions[:, 1] += cy
     ant_z = round(cz / dx) * dx  # snap to grid
+    if validate_placement:
+        _check_antenna_positions(
+            geo_info,
+            positions,
+            min_clearance_m=min_clearance_m,
+            ant_z_m=ant_z,
+        )
 
     pairs = array_geo.tx_rx_pairs()
     inputs = []

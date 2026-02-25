@@ -42,6 +42,10 @@ def main():
                         help="Random seed")
     parser.add_argument("--dx", type=float, default=0.001,
                         help="Cell size in meters (default: 0.001 = 1mm)")
+    parser.add_argument("--radius-cm", type=float, default=None,
+                        help="Override antenna ring radius (cm)")
+    parser.add_argument("--min-clearance-mm", type=float, default=0.0,
+                        help="Required antenna-to-tissue clearance (mm)")
     parser.add_argument("--data-dir", default=None,
                         help="Path to UWCEM phantom data")
     parser.add_argument("--output-dir", default=None,
@@ -63,6 +67,8 @@ def main():
         array_geo = presets.maria_m5()
     elif args.preset == "mammowave":
         array_geo = presets.mammowave()
+    if args.radius_cm is not None:
+        array_geo.radius_m = args.radius_cm / 100.0
 
     has_tumor = not args.no_tumor and args.tumor_mm > 0
 
@@ -73,6 +79,7 @@ def main():
           f"{array_geo.mode})")
     print(f"  Tumor:   {'%.1f mm' % args.tumor_mm if has_tumor else 'none'}")
     print(f"  Cell:    {args.dx*1000:.1f} mm")
+    print(f"  Radius:  {array_geo.radius_m*100:.2f} cm")
     print(f"  Output:  {output_dir}")
     print("=" * 60)
 
@@ -103,7 +110,12 @@ def main():
 
     # Generate input files
     print(f"\n[4/5] Generating {array_geo.n_measurements()} input files...")
-    inputs = generate_gprmax_inputs(geo_info, array_geo, work_dir)
+    inputs = generate_gprmax_inputs(
+        geo_info,
+        array_geo,
+        work_dir,
+        min_clearance_m=args.min_clearance_mm / 1000.0,
+    )
     print(f"  Generated {len(inputs)} simulation configs")
 
     # Run

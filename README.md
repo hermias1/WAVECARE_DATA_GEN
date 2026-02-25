@@ -83,6 +83,20 @@ Output is saved as `output/scan_<phantom>_<preset>/scan_data.npz` containing:
 - `dt`: time step
 - Metadata: phantom ID, tumor parameters, acquisition config
 
+## Physics Review Pack
+
+For external collaborators (especially physicists), start with:
+
+- `docs/PHYSICS_REVIEW_GUIDE.md`
+- `docs/PHYSICS_MODEL_AND_ASSUMPTIONS.md`
+- `docs/PHYSICS_VALIDATION_CHECKLIST.md`
+- `docs/RELECTURE_PHYSIQUE_FR.md` (French quick entry point)
+
+Important interpretation note:
+- Current simulations use a Hertzian dipole source and point-field receiver (`Ez`),
+  then frequency-domain conversion and reference subtraction.
+- This is not a full port-impedance antenna model producing direct VNA `S21`.
+
 ## Acquisition Presets
 
 | Preset | Antennas | Mode | Freq (GHz) | Measurements |
