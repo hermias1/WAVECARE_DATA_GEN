@@ -25,8 +25,9 @@ Ce fichier est une porte d'entrée rapide pour une relecture "physique" du repo.
 python3 scripts/generate_scan.py \
   --phantom 071904 \
   --preset umbmid \
-  --radius-cm 12 \
+  --radius-cm 11 \
   --min-clearance-mm 3 \
   --tumor-mm 12
 ```
 
+Si erreur "outside simulation domain", augmenter `--pad` (pipeline 3D) ou réduire `--radius-cm`.

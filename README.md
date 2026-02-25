@@ -74,6 +74,10 @@ python scripts/generate_scan.py --phantom 071904 --preset maria --tumor-mm 8
 
 # Reference scan without tumor
 python scripts/generate_scan.py --phantom 071904 --preset umbmid --no-tumor
+
+# Physics-safe geometry defaults for review
+python scripts/generate_scan.py --phantom 071904 --preset umbmid \
+  --radius-cm 11 --min-clearance-mm 3 --center-mode ring_fit
 ```
 
 Output is saved as `output/scan_<phantom>_<preset>/scan_data.npz` containing:
@@ -96,6 +100,11 @@ Important interpretation note:
 - Current simulations use a Hertzian dipole source and point-field receiver (`Ez`),
   then frequency-domain conversion and reference subtraction.
 - This is not a full port-impedance antenna model producing direct VNA `S21`.
+
+Additional analysis scripts:
+- `scripts/physics_sensitivity.py` (dx/frequency numerical sensitivity)
+- `scripts/compare_with_umbmid.py` (quick synthetic-vs-real metric report)
+- `scripts/audit_array_geometry.py` (find minimal valid radius/pad per phantom)
 
 ## Acquisition Presets
 

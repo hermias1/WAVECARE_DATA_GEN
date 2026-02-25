@@ -11,6 +11,11 @@ import argparse
 import os
 import time
 import numpy as np
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+sys.path.insert(0, _PROJECT_ROOT)
 
 from wavecare.synth.phantoms import load_uwcem_phantom
 from wavecare.synth.scenes import generate_scene
@@ -22,9 +27,6 @@ from wavecare.synth.solver import (
     collect_results,
 )
 from wavecare.acqui import presets
-
-
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def main():
@@ -46,6 +48,12 @@ def main():
                         help="Override antenna ring radius (cm)")
     parser.add_argument("--min-clearance-mm", type=float, default=0.0,
                         help="Required antenna-to-tissue clearance (mm)")
+    parser.add_argument("--center-mode", default="auto",
+                        choices=["auto", "volume", "tissue_centroid",
+                                 "skin_centroid", "ring_fit"],
+                        help="How to place array center relative to phantom")
+    parser.add_argument("--center-search-mm", type=float, default=20.0,
+                        help="Search half-width for ring_fit (mm)")
     parser.add_argument("--data-dir", default=None,
                         help="Path to UWCEM phantom data")
     parser.add_argument("--output-dir", default=None,
@@ -80,6 +88,7 @@ def main():
     print(f"  Tumor:   {'%.1f mm' % args.tumor_mm if has_tumor else 'none'}")
     print(f"  Cell:    {args.dx*1000:.1f} mm")
     print(f"  Radius:  {array_geo.radius_m*100:.2f} cm")
+    print(f"  Center:  {args.center_mode}")
     print(f"  Output:  {output_dir}")
     print("=" * 60)
 
@@ -115,8 +124,13 @@ def main():
         array_geo,
         work_dir,
         min_clearance_m=args.min_clearance_mm / 1000.0,
+        center_mode=args.center_mode,
+        center_search_m=args.center_search_mm / 1000.0,
     )
     print(f"  Generated {len(inputs)} simulation configs")
+    if "array_center_shift_mm" in geo_info:
+        sx, sy = geo_info["array_center_shift_mm"]
+        print(f"  Center shift: ({sx:+.1f}, {sy:+.1f}) mm")
 
     # Run
     print(f"\n[5/5] Running simulations...")
@@ -138,9 +152,15 @@ def main():
         "tumor_mm": args.tumor_mm if has_tumor else 0,
         "seed": args.seed,
         "dx": args.dx,
+        "center_mode": args.center_mode,
+        "center_search_mm": args.center_search_mm,
         "n_measurements": len(inputs),
         "slice_idx": geo_info["slice_idx"],
     }
+    if "array_center_m" in geo_info:
+        metadata["array_center_m"] = geo_info["array_center_m"]
+    if "array_center_shift_mm" in geo_info:
+        metadata["array_center_shift_mm"] = geo_info["array_center_shift_mm"]
     if scene.get("tumor_info"):
         for k, v in scene["tumor_info"].items():
             metadata[f"tumor_{k}"] = v

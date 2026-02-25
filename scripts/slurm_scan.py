@@ -127,6 +127,8 @@ def _prepare_positive(args, phantom, array_geo, rng):
         array_geo,
         tumor_work,
         min_clearance_m=args.min_clearance_mm / 1000.0,
+        center_mode=args.center_mode,
+        center_search_m=args.center_search_mm / 1000.0,
     )
     print(f"  Domain: {tumor_geo['geo_shape']} = "
           f"{np.prod(tumor_geo['geo_shape'])/1e6:.1f}M cells")
@@ -147,6 +149,8 @@ def _prepare_positive(args, phantom, array_geo, rng):
         array_geo,
         ref_work,
         min_clearance_m=args.min_clearance_mm / 1000.0,
+        center_mode=args.center_mode,
+        center_search_m=args.center_search_mm / 1000.0,
     )
     print(f"  {len(ref_inputs)} .in files written")
 
@@ -161,6 +165,8 @@ def _prepare_positive(args, phantom, array_geo, rng):
         "dx": args.dx,
         "ant_radius_cm": array_geo.radius_m * 100.0,
         "min_clearance_mm": args.min_clearance_mm,
+        "center_mode": args.center_mode,
+        "center_search_mm": args.center_search_mm,
         "pad_cells": args.pad,
         "n_pairs_tumor": len(tumor_inputs),
         "n_pairs_ref": len(ref_inputs),
@@ -201,6 +207,8 @@ def _prepare_negative(args, phantom, array_geo, rng):
         array_geo,
         ref_a_work,
         min_clearance_m=args.min_clearance_mm / 1000.0,
+        center_mode=args.center_mode,
+        center_search_m=args.center_search_mm / 1000.0,
     )
     print(f"  Domain: {geo_a['geo_shape']} = "
           f"{np.prod(geo_a['geo_shape'])/1e6:.1f}M cells")
@@ -223,6 +231,8 @@ def _prepare_negative(args, phantom, array_geo, rng):
         array_geo,
         ref_b_work,
         min_clearance_m=args.min_clearance_mm / 1000.0,
+        center_mode=args.center_mode,
+        center_search_m=args.center_search_mm / 1000.0,
     )
     print(f"  {len(inputs_b)} .in files written")
 
@@ -237,6 +247,8 @@ def _prepare_negative(args, phantom, array_geo, rng):
         "dx": args.dx,
         "ant_radius_cm": array_geo.radius_m * 100.0,
         "min_clearance_mm": args.min_clearance_mm,
+        "center_mode": args.center_mode,
+        "center_search_mm": args.center_search_mm,
         "pad_cells": args.pad,
         "perturbation": perturbation,
         "n_pairs_ref_a": len(inputs_a),
@@ -502,6 +514,12 @@ def _add_common_prepare_args(p):
                    help="Override antenna ring radius (cm)")
     p.add_argument("--min-clearance-mm", type=float, default=0.0,
                    help="Required antenna-to-tissue clearance (mm)")
+    p.add_argument("--center-mode", default="auto",
+                   choices=["auto", "volume", "tissue_centroid",
+                            "skin_centroid", "ring_fit"],
+                   help="How to place array center relative to phantom")
+    p.add_argument("--center-search-mm", type=float, default=20.0,
+                   help="Search half-width for ring_fit (mm)")
     p.add_argument("--perturbation", type=float, default=_DEFAULT_PERTURBATION,
                    help="Material perturbation for negative scans (default: 0.05)")
     p.add_argument("--work-dir", required=True)

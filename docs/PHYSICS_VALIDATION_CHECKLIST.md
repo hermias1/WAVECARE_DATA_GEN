@@ -54,7 +54,8 @@ How to enforce in this repo:
 
 - `preset`: `umbmid`
 - `dx`: `1 mm` (if runtime-limited)
-- `radius`: start with `12 cm` until recentering is implemented
+- `center mode`: `ring_fit` (or `auto`, which resolves to ring_fit)
+- `radius`: choose from phantom audit (often ~10-12 cm depending on phantom/pad)
 - `min clearance`: `3 mm`
-- then re-evaluate and reduce radius only after geometric recentering work
-
+- if out-of-bounds occurs, increase `pad` and/or reduce radius
+- then re-evaluate with phantom-by-phantom diagnostics before production runs

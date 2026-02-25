@@ -51,12 +51,24 @@ def spectral_similarity(fd_synth, fd_real, freqs_hz):
     # Average spectral shape correlation
     correlations = []
     for i in range(min(mag_synth.shape[0], mag_real.shape[0])):
-        c = np.corrcoef(mag_synth_norm[i], mag_real_norm[i])[0, 1]
-        correlations.append(c)
+        a = mag_synth_norm[i]
+        b = mag_real_norm[i]
+        if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+            continue
+        c = np.corrcoef(a, b)[0, 1]
+        if np.isfinite(c):
+            correlations.append(c)
+
+    if correlations:
+        corr_mean = float(np.mean(correlations))
+        corr_std = float(np.std(correlations))
+    else:
+        corr_mean = float("nan")
+        corr_std = float("nan")
 
     return {
-        "spectral_correlation_mean": float(np.nanmean(correlations)),
-        "spectral_correlation_std": float(np.nanstd(correlations)),
+        "spectral_correlation_mean": corr_mean,
+        "spectral_correlation_std": corr_std,
         "mag_ratio_db": float(20 * np.log10(
             np.mean(mag_synth) / (np.mean(mag_real) + 1e-30)
         )),
@@ -82,7 +94,12 @@ def angular_variation_similarity(data_synth, data_real):
     energy_real = energy_real / energy_real.max()
 
     n = min(len(energy_synth), len(energy_real))
-    corr = np.corrcoef(energy_synth[:n], energy_real[:n])[0, 1]
+    a = energy_synth[:n]
+    b = energy_real[:n]
+    if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+        corr = float("nan")
+    else:
+        corr = np.corrcoef(a, b)[0, 1]
 
     return {
         "angular_energy_correlation": float(corr),

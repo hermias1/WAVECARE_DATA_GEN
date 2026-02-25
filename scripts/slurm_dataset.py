@@ -101,6 +101,10 @@ def cmd_prepare(args):
         "n_total": n_total,
         "dx": args.dx,
         "pad": args.pad,
+        "radius_cm": args.radius_cm,
+        "min_clearance_mm": args.min_clearance_mm,
+        "center_mode": args.center_mode,
+        "center_search_mm": args.center_search_mm,
         "seed": args.seed,
         "scans": [],
     }
@@ -122,9 +126,14 @@ def cmd_prepare(args):
             "--seed", str(scan["seed"]),
             "--dx", str(args.dx),
             "--pad", str(args.pad),
+            "--center-mode", args.center_mode,
+            "--center-search-mm", str(args.center_search_mm),
+            "--min-clearance-mm", str(args.min_clearance_mm),
             "--work-dir", scan_dir,
             "--data-dir", args.phantom_dir,
         ]
+        if args.radius_cm is not None:
+            cmd += ["--radius-cm", str(args.radius_cm)]
         subprocess.run(cmd, check=True)
 
         plan["scans"].append({
@@ -373,6 +382,14 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dx", type=float, default=0.001)
     p.add_argument("--pad", type=int, default=50)
+    p.add_argument("--radius-cm", type=float, default=None,
+                   help="Override antenna ring radius (cm)")
+    p.add_argument("--min-clearance-mm", type=float, default=0.0,
+                   help="Required antenna-to-tissue clearance (mm)")
+    p.add_argument("--center-mode", default="auto",
+                   choices=["auto", "volume", "tissue_centroid",
+                            "skin_centroid", "ring_fit"])
+    p.add_argument("--center-search-mm", type=float, default=20.0)
     p.add_argument("--base-dir", required=True)
 
     # -- submit --

@@ -89,7 +89,7 @@ Try a 2D synthetic scan with explicit geometry constraints:
 python3 scripts/generate_scan.py \
   --phantom 071904 \
   --preset umbmid \
-  --radius-cm 12 \
+  --radius-cm 11 \
   --min-clearance-mm 3 \
   --tumor-mm 12
 ```
@@ -100,8 +100,39 @@ For 3D cluster pipeline prep (no simulation launch in this command):
 python3 scripts/slurm_scan.py prepare \
   --phantom 071904 \
   --preset umbmid \
-  --radius-cm 12 \
+  --radius-cm 11 \
   --min-clearance-mm 3 \
   --work-dir /tmp/wavecare_review
 ```
 
+If you get an "outside simulation domain" placement error, increase padding
+(`--pad`) and/or reduce `--radius-cm`.
+
+Numerical sensitivity (dx vs fmax):
+
+```bash
+python3 scripts/physics_sensitivity.py --dx-mm 1 --fmin-ghz 1 --fmax-ghz 8
+```
+
+Quick synthetic-vs-real metric report (if UM-BMID files are available):
+
+```bash
+python3 scripts/compare_with_umbmid.py \
+  --synthetic /path/to/synthetic_scan.npz \
+  --real /path/to/fd_data_s11_emp.pickle
+```
+
+Batch geometry audit (minimal valid radius/pad by phantom):
+
+```bash
+python3 scripts/audit_array_geometry.py \
+  --phantom-dir /path/to/uwcem \
+  --preset umbmid \
+  --dx 0.001 \
+  --pads 40,50,60,70 \
+  --radius-cm-min 7 \
+  --radius-cm-max 13 \
+  --radius-cm-step 0.5 \
+  --min-clearance-mm 3 \
+  --center-mode ring_fit
+```

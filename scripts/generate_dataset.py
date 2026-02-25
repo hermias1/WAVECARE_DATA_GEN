@@ -22,6 +22,11 @@ import argparse
 import os
 import time
 import numpy as np
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+sys.path.insert(0, _PROJECT_ROOT)
 
 from wavecare.synth.phantoms import load_uwcem_phantom
 from wavecare.synth.scenes import generate_scene, scene_to_metadata
@@ -37,9 +42,6 @@ from wavecare.synth.noise import apply_noise_model, random_noise_params
 from wavecare.acqui import presets
 
 
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-
-
 def _get_preset(name):
     return {
         "umbmid": presets.umbmid_gen2,
@@ -49,7 +51,8 @@ def _get_preset(name):
 
 
 def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
-                    seed, dx, work_dir, min_clearance_m=0.0):
+                    seed, dx, work_dir, min_clearance_m=0.0,
+                    center_mode="auto", center_search_m=0.02):
     """Run one FDTD scan (tumor or reference). Returns results dict."""
     rng = np.random.default_rng(seed)
     scene = generate_scene(phantom, has_tumor=has_tumor, rng=rng,
@@ -62,6 +65,8 @@ def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
         array_geo,
         work_dir,
         min_clearance_m=min_clearance_m,
+        center_mode=center_mode,
+        center_search_m=center_search_m,
     )
 
     run_scan(inputs)
@@ -73,7 +78,8 @@ def run_single_scan(phantom, array_geo, has_tumor, tumor_params,
 
 def generate_one(phantom, array_geo, tumor_mm, seed, dx,
                  output_dir, snr_db=30.0, scan_id=0, phant_id="SYN",
-                 min_clearance_m=0.0):
+                 min_clearance_m=0.0, center_mode="auto",
+                 center_search_m=0.02):
     """Generate one calibrated, noisy scan.
 
     Returns dict with all data and metadata.
@@ -91,6 +97,7 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
         phantom, array_geo, has_tumor=True,
         tumor_params=tumor_params, seed=seed, dx=dx,
         work_dir=tumor_work, min_clearance_m=min_clearance_m,
+        center_mode=center_mode, center_search_m=center_search_m,
     )
     print(f"  [tumor] Done in {(time.time()-t0)/60:.1f} min")
 
@@ -107,6 +114,7 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
         phantom, array_geo, has_tumor=False,
         tumor_params=None, seed=ref_seed, dx=dx,
         work_dir=ref_work, min_clearance_m=min_clearance_m,
+        center_mode=center_mode, center_search_m=center_search_m,
     )
     print(f"  [ref]   Done in {(time.time()-t0)/60:.1f} min")
 
@@ -130,6 +138,10 @@ def generate_one(phantom, array_geo, tumor_mm, seed, dx,
     metadata["dx"] = dx
     metadata["ant_radius_cm"] = array_geo.radius_m * 100.0
     metadata["min_clearance_mm"] = min_clearance_m * 1000.0
+    metadata["center_mode"] = center_mode
+    metadata["center_search_mm"] = center_search_m * 1000.0
+    if "array_center_shift_mm" in geo_info:
+        metadata["array_center_shift_mm"] = geo_info["array_center_shift_mm"]
     metadata["preset"] = "custom"
     metadata["noise_snr_db"] = noise_params["snr_db"]
     metadata["noise_phase_deg"] = noise_params["phase_std_deg"]
@@ -169,6 +181,12 @@ def main():
                         help="Override antenna ring radius (cm)")
     parser.add_argument("--min-clearance-mm", type=float, default=0.0,
                         help="Required antenna-to-tissue clearance (mm)")
+    parser.add_argument("--center-mode", default="auto",
+                        choices=["auto", "volume", "tissue_centroid",
+                                 "skin_centroid", "ring_fit"],
+                        help="How to place array center relative to phantom")
+    parser.add_argument("--center-search-mm", type=float, default=20.0,
+                        help="Search half-width for ring_fit (mm)")
     parser.add_argument("--data-dir", default=None)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
@@ -190,6 +208,7 @@ def main():
     print(f"  Scans:   {args.n_scans}")
     print(f"  Cell:    {args.dx*1000:.1f} mm")
     print(f"  Radius:  {array_geo.radius_m*100:.2f} cm")
+    print(f"  Center:  {args.center_mode}")
     print(f"  Output:  {output_dir}")
     print("=" * 60)
 
@@ -230,6 +249,8 @@ def main():
             scan_id=i,
             phant_id=args.phantom,
             min_clearance_m=args.min_clearance_mm / 1000.0,
+            center_mode=args.center_mode,
+            center_search_m=args.center_search_mm / 1000.0,
         )
 
         all_fd_cal.append(result["fd_cal"])

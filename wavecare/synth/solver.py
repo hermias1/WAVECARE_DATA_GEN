@@ -206,6 +206,235 @@ def write_geometry_files(geo_info, work_dir, perturbation=0.0, rng=None):
     return geo_path, mat_path
 
 
+def _get_placement_slice(geo_info, ant_z_m=None):
+    """Return the 2D label slice used for antenna placement checks."""
+    dx = geo_info["dx"]
+    if "labels_3d" in geo_info:
+        labels = geo_info["labels_3d"]
+        if ant_z_m is None:
+            raise ValueError("ant_z_m must be provided for 3D antenna validation")
+        iz = int(round(ant_z_m / dx))
+        if iz < 0 or iz >= labels.shape[2]:
+            raise ValueError(
+                f"Antenna z index out of bounds: {iz} not in [0, {labels.shape[2] - 1}]"
+            )
+        return labels[:, :, iz], f"3D z={ant_z_m * 1000:.1f}mm"
+    return geo_info["labels_2d"], f"2D slice_idx={geo_info.get('slice_idx', 'n/a')}"
+
+
+def _antenna_positions_with_center(array_geo, cx, cy):
+    """Compute antenna positions with center already in domain coordinates."""
+    positions = array_geo.antenna_positions()
+    positions[:, 0] += cx
+    positions[:, 1] += cy
+    return positions
+
+
+def _placement_score(slice_2d, dx, positions_xy, clearance_map, min_clearance_m):
+    """Score ring placement: lower is better (0 means perfect)."""
+    ix = np.rint(positions_xy[:, 0] / dx).astype(int)
+    iy = np.rint(positions_xy[:, 1] / dx).astype(int)
+
+    in_bounds = (
+        (ix >= 0) & (ix < slice_2d.shape[0]) &
+        (iy >= 0) & (iy < slice_2d.shape[1])
+    )
+    n_oob = int(np.sum(~in_bounds))
+    if n_oob > 0:
+        # Very high penalty for out-of-bounds placements.
+        return 1e12 + n_oob * 1e9, n_oob, 0, 0.0
+
+    sampled_labels = slice_2d[ix, iy]
+    n_in_tissue = int(np.sum(sampled_labels > 0))
+    clearances = clearance_map[ix, iy]
+    min_clearance_found = float(np.min(clearances)) if clearances.size else float("inf")
+    clearance_deficit = np.maximum(0.0, min_clearance_m - clearances)
+
+    # Hierarchical objective:
+    # 1) avoid tissue intersection
+    # 2) satisfy clearance
+    # 3) maximize margin via residual term
+    score = (
+        n_in_tissue * 1e9
+        + float(np.sum(clearance_deficit)) / max(dx, 1e-12) * 1e4
+        + max(0.0, min_clearance_m - min_clearance_found) * 1e3
+    )
+    return score, n_oob, n_in_tissue, min_clearance_found
+
+
+def _resolve_array_center(
+    geo_info,
+    array_geo,
+    center_mode="auto",
+    min_clearance_m=0.0,
+    ant_z_m=None,
+    center_search_m=0.02,
+):
+    """Resolve array center in domain coordinates.
+
+    Modes:
+    - volume: use geometric center from padded grid.
+    - tissue_centroid: centroid of tissue mask (label > 0).
+    - skin_centroid: centroid of skin mask (label == 1), falls back to tissue.
+    - ring_fit: local grid-search minimizing tissue hits / clearance deficits.
+    - auto: ring_fit with fallback to volume.
+    """
+    dx = geo_info["dx"]
+    base_cx, base_cy = geo_info["center_m"][:2]
+    slice_2d, slice_desc = _get_placement_slice(geo_info, ant_z_m=ant_z_m)
+    tissue_mask = slice_2d > 0
+    clearance_map = distance_transform_edt(~tissue_mask) * dx
+
+    def _centroid(mask):
+        idx = np.argwhere(mask)
+        if idx.size == 0:
+            return None
+        return float(np.mean(idx[:, 0]) * dx), float(np.mean(idx[:, 1]) * dx)
+
+    resolved_mode = center_mode
+    if center_mode == "auto":
+        resolved_mode = "ring_fit"
+
+    if resolved_mode == "volume":
+        cx, cy = base_cx, base_cy
+    elif resolved_mode == "tissue_centroid":
+        c = _centroid(tissue_mask)
+        cx, cy = c if c is not None else (base_cx, base_cy)
+    elif resolved_mode == "skin_centroid":
+        c = _centroid(slice_2d == 1)
+        if c is None:
+            c = _centroid(tissue_mask)
+        cx, cy = c if c is not None else (base_cx, base_cy)
+    elif resolved_mode == "ring_fit":
+        max_shift_cells = int(round(center_search_m / dx))
+        shifts = np.arange(-max_shift_cells, max_shift_cells + 1) * dx
+        best = None
+
+        for sx in shifts:
+            for sy in shifts:
+                cand_cx = base_cx + float(sx)
+                cand_cy = base_cy + float(sy)
+                positions = _antenna_positions_with_center(array_geo, cand_cx, cand_cy)
+                score, n_oob, n_in_tissue, min_clear = _placement_score(
+                    slice_2d, dx, positions, clearance_map, min_clearance_m
+                )
+                # Tie-break by minimal displacement from base center.
+                tie = float(sx * sx + sy * sy)
+                candidate = (score, tie, cand_cx, cand_cy, n_oob, n_in_tissue, min_clear)
+                if best is None or candidate < best:
+                    best = candidate
+
+        if best is None:
+            cx, cy = base_cx, base_cy
+        else:
+            _, _, cx, cy, _, _, _ = best
+    else:
+        raise ValueError(
+            "Unknown center_mode: "
+            f"{center_mode}. Expected one of: auto, volume, tissue_centroid, "
+            "skin_centroid, ring_fit"
+        )
+
+    return {
+        "cx": float(cx),
+        "cy": float(cy),
+        "base_cx": float(base_cx),
+        "base_cy": float(base_cy),
+        "slice_desc": slice_desc,
+        "center_mode": center_mode,
+        "resolved_mode": resolved_mode,
+        "shift_x_mm": float((cx - base_cx) * 1000.0),
+        "shift_y_mm": float((cy - base_cy) * 1000.0),
+    }
+
+
+def evaluate_array_placement(
+    geo_info,
+    array_geo,
+    min_clearance_m=0.0,
+    center_mode="auto",
+    center_search_m=0.02,
+    ant_z_m=None,
+):
+    """Evaluate antenna placement quality without generating input files.
+
+    Returns placement statistics that can be used to audit geometry choices
+    (radius/padding/centering mode) across phantoms.
+    """
+    dx = geo_info["dx"]
+    if "labels_3d" in geo_info and ant_z_m is None:
+        cz = geo_info["center_m"][2]
+        ant_z_m = round(cz / dx) * dx
+
+    center_info = _resolve_array_center(
+        geo_info,
+        array_geo,
+        center_mode=center_mode,
+        min_clearance_m=min_clearance_m,
+        ant_z_m=ant_z_m,
+        center_search_m=center_search_m,
+    )
+    cx, cy = center_info["cx"], center_info["cy"]
+    positions = _antenna_positions_with_center(array_geo, cx, cy)
+    slice_2d, slice_desc = _get_placement_slice(geo_info, ant_z_m=ant_z_m)
+
+    ix = np.rint(positions[:, 0] / dx).astype(int)
+    iy = np.rint(positions[:, 1] / dx).astype(int)
+    in_bounds = (
+        (ix >= 0) & (ix < slice_2d.shape[0]) &
+        (iy >= 0) & (iy < slice_2d.shape[1])
+    )
+
+    n_ant = positions.shape[0]
+    n_oob = int(np.sum(~in_bounds))
+
+    tissue_mask = slice_2d > 0
+    clearance_map = distance_transform_edt(~tissue_mask) * dx
+
+    n_in_tissue = 0
+    min_clearance_found = float("inf")
+    if np.any(in_bounds):
+        ix_ok = ix[in_bounds]
+        iy_ok = iy[in_bounds]
+        sampled_labels = slice_2d[ix_ok, iy_ok]
+        n_in_tissue = int(np.sum(sampled_labels > 0))
+        clearances = clearance_map[ix_ok, iy_ok]
+        min_clearance_found = float(np.min(clearances))
+
+    tissue_ix, tissue_iy = np.where(tissue_mask)
+    if tissue_ix.size > 0:
+        x_m = tissue_ix * dx
+        y_m = tissue_iy * dx
+        radii = np.sqrt((x_m - cx) ** 2 + (y_m - cy) ** 2)
+        suggested_radius_m = float(np.max(radii) + min_clearance_m)
+    else:
+        suggested_radius_m = 0.0
+
+    valid = (
+        n_oob == 0
+        and n_in_tissue == 0
+        and min_clearance_found >= min_clearance_m
+    )
+    return {
+        "valid": bool(valid),
+        "n_antennas": int(n_ant),
+        "n_oob": n_oob,
+        "n_in_tissue": int(n_in_tissue),
+        "min_clearance_m": float(min_clearance_found),
+        "required_clearance_m": float(min_clearance_m),
+        "suggested_radius_m": float(suggested_radius_m),
+        "slice_desc": slice_desc,
+        "array_center_m": (float(cx), float(cy)),
+        "array_center_shift_mm": (
+            float(center_info["shift_x_mm"]),
+            float(center_info["shift_y_mm"]),
+        ),
+        "center_mode": center_info["center_mode"],
+        "center_mode_resolved": center_info["resolved_mode"],
+        "ant_z_m": None if ant_z_m is None else float(ant_z_m),
+    }
+
+
 def _check_antenna_positions(
     geo_info,
     positions_xy,
@@ -231,23 +460,10 @@ def _check_antenna_positions(
         If any antenna is out of bounds, inside tissue, or too close.
     """
     dx = geo_info["dx"]
-    center_x, center_y = geo_info["center_m"][:2]
+    center_x = float(np.mean(positions_xy[:, 0]))
+    center_y = float(np.mean(positions_xy[:, 1]))
     n_ant = positions_xy.shape[0]
-
-    if "labels_3d" in geo_info:
-        labels = geo_info["labels_3d"]
-        if ant_z_m is None:
-            raise ValueError("ant_z_m must be provided for 3D antenna validation")
-        iz = int(round(ant_z_m / dx))
-        if iz < 0 or iz >= labels.shape[2]:
-            raise ValueError(
-                f"Antenna z index out of bounds: {iz} not in [0, {labels.shape[2] - 1}]"
-            )
-        slice_2d = labels[:, :, iz]
-        slice_desc = f"3D z={ant_z_m * 1000:.1f}mm"
-    else:
-        slice_2d = geo_info["labels_2d"]
-        slice_desc = f"2D slice_idx={geo_info.get('slice_idx', 'n/a')}"
+    slice_2d, slice_desc = _get_placement_slice(geo_info, ant_z_m=ant_z_m)
 
     ix = np.rint(positions_xy[:, 0] / dx).astype(int)
     iy = np.rint(positions_xy[:, 1] / dx).astype(int)
@@ -300,6 +516,8 @@ def generate_gprmax_inputs(
     time_window=8e-9,
     validate_placement=True,
     min_clearance_m=0.0,
+    center_mode="auto",
+    center_search_m=0.02,
 ):
     """Generate gprMax .in files for all Tx-Rx pairs.
 
@@ -317,6 +535,10 @@ def generate_gprmax_inputs(
         If True, fail fast when antennas are out-of-domain / in tissue.
     min_clearance_m : float
         Required minimum distance from antennas to tissue (meters).
+    center_mode : str
+        Array-center strategy: auto, volume, tissue_centroid, skin_centroid, ring_fit.
+    center_search_m : float
+        Search half-width (meters) used by ring_fit.
 
     Returns
     -------
@@ -326,13 +548,23 @@ def generate_gprmax_inputs(
     domain_x, domain_y = geo_info["domain_m"]
     offset = geo_info["pad_cells"] * dx
 
-    # Shift array center to breast center in domain
-    cx, cy = geo_info["center_m"]
+    center_info = _resolve_array_center(
+        geo_info,
+        array_geo,
+        center_mode=center_mode,
+        min_clearance_m=min_clearance_m,
+        center_search_m=center_search_m,
+    )
+    cx, cy = center_info["cx"], center_info["cy"]
+    positions = _antenna_positions_with_center(array_geo, cx, cy)
 
-    positions = array_geo.antenna_positions()
-    # Shift positions to domain coordinates
-    positions[:, 0] += cx
-    positions[:, 1] += cy
+    geo_info["array_center_m"] = (cx, cy)
+    geo_info["array_center_shift_mm"] = (
+        center_info["shift_x_mm"],
+        center_info["shift_y_mm"],
+    )
+    geo_info["array_center_mode"] = center_info["center_mode"]
+    geo_info["array_center_mode_resolved"] = center_info["resolved_mode"]
     if validate_placement:
         _check_antenna_positions(
             geo_info,
@@ -383,6 +615,8 @@ def generate_gprmax_inputs_3d(
     time_window=12e-9,
     validate_placement=True,
     min_clearance_m=0.0,
+    center_mode="auto",
+    center_search_m=0.02,
 ):
     """Generate gprMax .in files for all Tx-Rx pairs in 3D.
 
@@ -399,6 +633,10 @@ def generate_gprmax_inputs_3d(
         If True, fail fast when antennas are out-of-domain / in tissue.
     min_clearance_m : float
         Required minimum distance from antennas to tissue (meters).
+    center_mode : str
+        Array-center strategy: auto, volume, tissue_centroid, skin_centroid, ring_fit.
+    center_search_m : float
+        Search half-width (meters) used by ring_fit.
 
     Returns
     -------
@@ -407,12 +645,27 @@ def generate_gprmax_inputs_3d(
     dx = geo_info["dx"]
     domain_x, domain_y, domain_z = geo_info["domain_m"]
     offset = geo_info["pad_cells"] * dx
-    cx, cy, cz = geo_info["center_m"]
-
-    positions = array_geo.antenna_positions()  # (n, 2) — x, y
-    positions[:, 0] += cx
-    positions[:, 1] += cy
+    _, _, cz = geo_info["center_m"]
     ant_z = round(cz / dx) * dx  # snap to grid
+
+    center_info = _resolve_array_center(
+        geo_info,
+        array_geo,
+        center_mode=center_mode,
+        min_clearance_m=min_clearance_m,
+        ant_z_m=ant_z,
+        center_search_m=center_search_m,
+    )
+    cx, cy = center_info["cx"], center_info["cy"]
+    positions = _antenna_positions_with_center(array_geo, cx, cy)
+
+    geo_info["array_center_m"] = (cx, cy)
+    geo_info["array_center_shift_mm"] = (
+        center_info["shift_x_mm"],
+        center_info["shift_y_mm"],
+    )
+    geo_info["array_center_mode"] = center_info["center_mode"]
+    geo_info["array_center_mode_resolved"] = center_info["resolved_mode"]
     if validate_placement:
         _check_antenna_positions(
             geo_info,
